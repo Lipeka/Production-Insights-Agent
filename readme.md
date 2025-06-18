@@ -64,8 +64,8 @@ Welcome to the **Production Insights AI Agent** — your personal AI data analys
 2. **Start the Agent**
    ```bash
    python agent.py
-````
-
+   ```
+   
 3. **Ask Anything**
 
    * Use the Gradio interface to ask production-related queries in plain English.
@@ -101,5 +101,3 @@ client = OpenAI(
 ## 📜 License
 
 This project is licensed under the MIT License.
-
-```
