@@ -1,288 +1,168 @@
-# ============================ 📦 IMPORTS ============================
-import os, io, re, base64, tempfile
+import os, io, re, json
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from prophet import Prophet
 from PIL import Image
 import gradio as gr
-import mlflow
-import shap
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
+from sqlalchemy import create_engine
 from openai import OpenAI
-from db_config import get_engine
-
-# ============================ 🔐 API CONFIG ============================
 client = OpenAI(
-    api_key="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",
+    api_key="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",
     base_url="https://openrouter.ai/api/v1"
 )
 MODEL = "mistralai/mistral-7b-instruct:free"
-
-# ============================ 🔗 DB CONFIG ============================
-engine = get_engine()
-
-# ============================ 📜 SYSTEM PROMPT ============================
 SYSTEM_PROMPT = """
-You are a production data analyst for a manufacturing company.
-You can answer any query about:
-- Total/average/max production
-- Forecasting using past trends
-- Comparing planned vs actual
-- Zero production entries
-- Time-based or line-specific analysis
-
-Data columns: Line, Job, Time_slot, Shift_Date, Shift, Planned, Actual, Losstime, Month, MonthNumber, Date.
-
-Always use a concise, analytical tone. Add insights if data has clear trends or anomalies.
-
-User Query: {{USER_QUERY}}
+You are an AI agent for analyzing production CSV data from PostgreSQL.
+Your response MUST be a JSON object with these keys:
+{
+  "task": "forecast" | "compare" | "zero_count",
+  "table": string,
+  "date_col": string,
+  "target_col": string,
+  "compare_cols": optional [string, string],
+  "filters": optional { column: value },
+  "period_days": optional int (only for forecast)
+}
+Return only valid JSON.
 """
-
-# ============================ 📊 FETCH DATA ============================
-def fetch_data(user_query=None):
-    df = pd.read_sql("SELECT * FROM production_data", engine)
-    df["Shift_Date"] = pd.to_datetime(df["Shift_Date"])
-    
-    if user_query:
-        uq = user_query.lower()
-
-        # Line filter: A-1, A-10, etc.
-        line_matches = re.findall(r'a-?\d{1,2}', uq)
-        if line_matches:
-            normalized_lines = [line.upper() if "-" in line else f"A-{line[-1]}" for line in line_matches]
-            df = df[df["Line"].isin(normalized_lines)]
-
-        # Job filter
-        job_matches = re.findall(r'job\s?\d+', uq)
-        if job_matches:
-            job_ids = [re.search(r'\d+', job).group() for job in job_matches]
-            df = df[df["Job"].astype(str).isin(job_ids)]
-
-        # Shift filter
-        shift_matches = re.findall(r'\bshift\s?[A-Z]?\d+', uq)
-        if shift_matches:
-            shifts = [re.sub(r'\s+', '', s).split("shift")[-1] for s in shift_matches]
-            df = df[df["Shift"].astype(str).isin(shifts)]
-
-        # Time_slot filter
-        time_slot_matches = re.findall(r'\btime\s?slot\s?\d+\b', uq)
-        if time_slot_matches:
-            time_slots = [re.search(r'\d+', slot).group() for slot in time_slot_matches]
-            df = df[df["Time_slot"].astype(str).isin(time_slots)]
-
-        # Date-specific filter
-        date_matches = re.findall(r'\d{4}-\d{2}-\d{2}', uq)
-        if date_matches:
-            dates = pd.to_datetime(date_matches)
-            df = df[df["Shift_Date"].isin(dates)]
-
-        # Month filtering (e.g., "June" or "month 6")
-        month_map = {
-            "january": 1, "february": 2, "march": 3, "april": 4,
-            "may": 5, "june": 6, "july": 7, "august": 8,
-            "september": 9, "october": 10, "november": 11, "december": 12
-        }
-        mentioned_months = [num for name, num in month_map.items() if name in uq]
-        month_numbers = re.findall(r'month\s?(\d+)', uq)
-        mentioned_months += list(map(int, month_numbers))
-        if mentioned_months:
-            df = df[df["Shift_Date"].dt.month.isin(mentioned_months)]
-
-        # Year filter
-        year_match = re.search(r'(20\d{2})', uq)
-        if year_match:
-            df = df[df["Shift_Date"].dt.year == int(year_match.group(1))]
-
-        # Zero production filter
-        if "zero" in uq and "production" in uq:
-            df = df[df["Actual"] == 0]
-
-    return df.sort_values("Shift_Date")
-
-
-# ============================ 🔮 FORECASTING ============================
-def extract_forecast_period(query):
-    query = query.lower()
-    days = 30
-    if match := re.search(r"(\d+)\s*day", query):
-        days = int(match.group(1))
-    elif match := re.search(r"(\d+)\s*week", query):
-        days = int(match.group(1)) * 7
-    elif match := re.search(r"(\d+)\s*month", query):
-        days = int(match.group(1)) * 30
-    return days
-
-def generate_forecast(df, periods=30):
-    mlflow.set_tracking_uri("http://localhost:5000")
-    mlflow.set_experiment("Forecasting_Production")
-
-    with mlflow.start_run():
-        daily = df.groupby("Shift_Date")["Actual"].sum().reset_index()
-        daily.columns = ["ds", "y"]
-        model = Prophet()
-        model.fit(daily)
-
-        mlflow.log_param("periods", periods)
-
-        future = model.make_future_dataframe(periods=periods)
-        forecast = model.predict(future)
-
-        mape = ((abs(forecast["yhat"][:len(daily)] - daily["y"]) / daily["y"]).mean()) * 100
-        mlflow.log_metric("MAPE", mape)
-
-        fig = model.plot(forecast)
+def get_engine():
+    return create_engine("postgresql://postgres:root@localhost:5432/prod_insights")
+engine = get_engine()
+def upload_and_insert(files):
+    for file in files:
+        df = pd.read_csv(file.name)
+        table_name = os.path.splitext(os.path.basename(file.name))[0].lower().replace("-", "_").replace(" ", "_")
+        df.to_sql(table_name, engine, if_exists='replace', index=False)
+    return "✅ CSVs uploaded & inserted into PostgreSQL."
+def get_schema():
+    with engine.connect() as conn:
+        tables = pd.read_sql("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'", conn)
+        schema = {}
+        for table in tables.table_name:
+            cols = pd.read_sql(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'", conn)
+            schema[table] = cols['column_name'].tolist()
+        return schema
+def ask_agent_schema_and_task(query, schema):
+    prompt = SYSTEM_PROMPT + f"\n\nSchema:\n{json.dumps(schema)}\n\nUser Query: {query}"
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "system", "content": prompt}]
+    )
+    content = response.choices[0].message.content.strip()
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+    try:
+        content_fixed = re.sub(r"```json|```", "", content)
+        content_fixed = re.sub(r'("\s*[\]}])', r'\1', content_fixed)
+        content_fixed = re.sub(r'(\")\s*(\"[^\"]+\"\s*:)', r'\1,\2', content_fixed)
+        content_fixed = re.sub(r'([}\]"\'])\s*(")', r'\1,\n\2', content_fixed)
+        return json.loads(content_fixed)
+    except Exception as e:
+        raise ValueError(f"❌ LLM returned invalid JSON and auto-fix failed: {e}\nRaw Output:\n{content}")
+def auto_detect_date_column(df):
+    for col in df.columns:
+        sample = df[col].astype(str).head(100)
+        parsed_ddmmyyyy = pd.to_datetime(sample, format='%d-%m-%Y', errors='coerce')
+        parsed_yyyymmdd = pd.to_datetime(sample, format='%Y-%m-%d', errors='coerce')
+        if parsed_ddmmyyyy.notna().sum() >= len(sample) * 0.5:
+            df[col] = pd.to_datetime(df[col], format='%d-%m-%Y', errors='coerce')
+            print(f"📆 Detected date format: DD-MM-YYYY in column '{col}'")
+            return col
+        elif parsed_yyyymmdd.notna().sum() >= len(sample) * 0.5:
+            df[col] = pd.to_datetime(df[col], format='%Y-%m-%d', errors='coerce')
+            print(f"📆 Detected date format: YYYY-MM-DD in column '{col}'")
+            return col
+    return None
+def dynamic_analysis(query):
+    try:
+        schema = get_schema()
+        plan = ask_agent_schema_and_task(query, schema)
+        table_name = plan["table"].lower().replace("-", "_")
+        with engine.connect() as conn:
+            df = pd.read_sql(f'SELECT * FROM "{table_name}"', conn)
+        df.columns = df.columns.str.strip().str.lower()
+        plan['target_col'] = plan['target_col'].strip().lower()
+        if 'compare_cols' in plan:
+            plan['compare_cols'] = [col.strip().lower() for col in plan['compare_cols']]
+        if 'filters' in plan:
+            plan['filters'] = {k.strip().lower(): str(v).strip() for k, v in plan['filters'].items()}
+        detected_date_col = auto_detect_date_column(df)
+        if not detected_date_col:
+            return "❌ No valid date format detected in the table.", None
+        plan['date_col'] = detected_date_col
+        df = df.dropna(subset=[plan['date_col']])
+        if plan['task'] == 'forecast':
+            df = df.dropna(subset=[plan['target_col']])
+            original_filters = plan.get('filters', {}).copy()
+            used_filters = original_filters.copy()
+            def try_filtered_df(filters):
+                temp = df.copy()
+                for col, val in filters.items():
+                    if col in temp.columns:
+                        temp = temp[temp[col].astype(str) == str(val)]
+                return temp
+            filtered_df = try_filtered_df(used_filters)
+            while filtered_df.shape[0] < 2 and used_filters:
+                removed = used_filters.popitem()
+                print(f"⚠️ Not enough data. Removed filter: {removed[0]} = {removed[1]}")
+                filtered_df = try_filtered_df(used_filters)
+            if filtered_df.shape[0] < 2:
+                filtered_df = df.copy()
+            if filtered_df.shape[0] < 2:
+                return "❌ Not enough data to forecast, even after relaxing filters.", None
+            filtered_df = filtered_df.groupby(plan['date_col'])[plan['target_col']].sum().reset_index()
+            filtered_df.columns = ['ds', 'y']
+            model = Prophet()
+            model.fit(filtered_df)
+            future = model.make_future_dataframe(periods=plan.get("period_days", 30))
+            forecast = model.predict(future)
+            fig = model.plot(forecast)
+        elif plan['task'] == 'compare':
+            if 'compare_cols' not in plan or len(plan['compare_cols']) < 2:
+                all_cols = df.columns.tolist()
+                detected = [c for c in all_cols if "plan" in c.lower() or "actual" in c.lower()]
+                if len(detected) >= 2:
+                    plan['compare_cols'] = detected[:2]
+                else:
+                    return "❌ Couldn't detect both 'planned' and 'actual' columns automatically.", None
+            df = df.groupby(plan['date_col'])[plan['compare_cols']].sum().reset_index()
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.bar(df[plan['date_col']], df[plan['compare_cols'][0]], width=0.4, label=plan['compare_cols'][0], align='edge')
+            ax.bar(df[plan['date_col']] - pd.Timedelta(days=0.4), df[plan['compare_cols'][1]], width=0.4, label=plan['compare_cols'][1], align='edge')
+            ax.set_title("Planned vs Actual")
+            ax.legend()
+        elif plan['task'] == 'zero_count':
+            count = df[df[plan['target_col']] == 0].shape[0]
+            return f"🚨 Found {count} zero-production entries.", None
+        else:
+            return "❌ Unsupported task.", None
         buf = io.BytesIO()
         fig.savefig(buf, format="png", bbox_inches="tight")
         plt.close(fig)
         buf.seek(0)
-
-    return forecast, buf
-
-# ============================ 📈 VISUALIZATION ============================
-def plot_planned_vs_actual(df):
-    if df.empty:
-        return None
-
-    daily = df.groupby("Shift_Date")[["Planned", "Actual"]].sum().reset_index()
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    width = 0.4
-    ax.bar(daily["Shift_Date"] - pd.Timedelta(days=0.2), daily["Planned"], width=width, label="Planned", color="skyblue")
-    ax.bar(daily["Shift_Date"] + pd.Timedelta(days=0.2), daily["Actual"], width=width, label="Actual", color="orange")
-
-    ax.set_title("📊 Planned vs Actual Production")
-    ax.set_ylabel("Units")
-    ax.set_xlabel("Date")
-    ax.legend()
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-
-    return Image.open(buf)
-
-# ============================ 🧠 SHAP EXPLAINABILITY ============================
-def compare_shap_lines(lines_list):
-    df = pd.read_sql("SELECT * FROM production_data", engine)
-    df["Shift_Date"] = pd.to_datetime(df["Shift_Date"])
-
-    if "MonthNumber" not in df.columns or df["MonthNumber"].isnull().all():
-        df["MonthNumber"] = df["Shift_Date"].dt.month
-
-    features = ["Planned", "Losstime", "MonthNumber"]
-    n_lines = len(lines_list)
-
-    fig, axes = plt.subplots(1, n_lines, figsize=(6 * n_lines, 5))
-    axes = axes if isinstance(axes, np.ndarray) else [axes]
-
-    for i, line in enumerate(lines_list):
-        line_df = df[df["Line"] == line].dropna(subset=features + ["Actual"])
-        if len(line_df) < 10:
-            axes[i].text(0.5, 0.5, f"❌ Not enough data for {line}", ha='center', va='center')
-            axes[i].axis("off")
-            continue
-
-        X = line_df[features]
-        y = line_df["Actual"]
-
-        model = xgb.XGBRegressor(n_estimators=100, max_depth=4, learning_rate=0.1)
-        model.fit(X, y)
-
-        explainer = shap.Explainer(model)
-        shap_values = explainer(X)
-
-        shap.plots.bar(shap_values, max_display=5, show=False, ax=axes[i])
-        axes[i].set_title(f"SHAP: {line}")
-
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", bbox_inches="tight")
-    plt.close()
-    buf.seek(0)
-    return f"📊 SHAP Feature Importance Comparison: {', '.join(lines_list)}", Image.open(buf)
-
-# ============================ 🧠 OPENROUTER RAG ============================
-def ask_agent(prompt):
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT.replace("{{USER_QUERY}}", prompt)}]
-    )
-    return response.choices[0].message.content
-
-# ============================ 🚀 QUERY HANDLER ============================
-def handle_query_gradio(query):
-    df = fetch_data(query)
-    if df.empty:
-        return "🚫 No data found for your query.", None
-
-    lower_q = query.lower()
-
-    try:
-        if "average" in lower_q or "avg" in lower_q:
-            avg_val = df["Actual"].mean()
-            return f"📊 Average actual production: **{avg_val:.2f}**", None
-
-        elif "total" in lower_q or "sum" in lower_q:
-            total_val = df["Actual"].sum()
-            return f"🧾 Total actual production: **{total_val:.0f}**", None
-
-        elif "max" in lower_q or "highest" in lower_q:
-            max_val = df["Actual"].max()
-            max_day = df[df["Actual"] == max_val]["Shift_Date"].iloc[0]
-            return f"🏆 Max actual: **{max_val}** on {max_day.date()}", None
-
-        elif "planned vs actual" in lower_q or "compare planned" in lower_q:
-            planned = df["Planned"].sum()
-            actual = df["Actual"].sum()
-            diff = actual - planned
-            img = plot_planned_vs_actual(df)
-            insight = f"""📈 Planned: {planned:.0f}  
-✅ Actual: {actual:.0f}  
-🔍 Difference: {diff:+.0f}"""
-            return insight.strip(), img
-
-        elif "shap" in lower_q and "compare" in lower_q:
-            found_lines = re.findall(r"a-\d+", lower_q)
-            lines = list(set(line.upper() for line in found_lines))
-            return compare_shap_lines(lines)
-
-        elif "zero production" in lower_q or "0 production" in lower_q:
-            zero_df = df[df["Actual"] == 0]
-            return f"🚨 {len(zero_df)} time slots had zero production.", None
-
-        elif "forecast" in lower_q:
-            forecast_days = extract_forecast_period(query)
-            forecast_df, img_buf = generate_forecast(df, periods=forecast_days)
-            img = Image.open(img_buf)
-            return f"🔮 Forecast for next {forecast_days} days.", img
-
-        else:
-            return ask_agent(query), None
-
-    except Exception as e:
-        return f"❌ Error during data processing: {str(e)}", None
-
-# ============================ 🎨 GRADIO UI ============================
-def ui_pipeline(query):
-    try:
-        insight, image = handle_query_gradio(query)
-        return insight, image
+        return "✅ Task executed successfully", Image.open(buf)
     except Exception as e:
         return f"❌ Error: {str(e)}", None
-
-demo = gr.Interface(
-    fn=ui_pipeline,
-    inputs=gr.Textbox(label="🧠 Ask your production query"),
-    outputs=[gr.Textbox(label="📋 AI Insight"), gr.Image(type="pil", label="📊 Chart Output")],
-    title="🏭 Production Insights AI Agent",
-    description="Ask about production trends, forecasts, feature importance, and more. Data-powered insights on demand!",
-    theme="default"
-)
-
+def query_ui(query):
+    result, image = dynamic_analysis(query)
+    return result, image
+def ui():
+    with gr.Blocks() as demo:
+        gr.Markdown("# 🧠 AI Production Agent")
+        with gr.Tab("📄 Upload CSVs"):
+            csv_upload = gr.File(file_types=['.csv'], file_count="multiple")
+            upload_btn = gr.Button("📥 Upload to PostgreSQL")
+            upload_output = gr.Textbox()
+            upload_btn.click(fn=upload_and_insert, inputs=[csv_upload], outputs=[upload_output])
+        with gr.Tab("🔍 Ask AI"):
+            query_box = gr.Textbox(label="Enter your production-related query")
+            query_btn = gr.Button("🚀 Analyze")
+            output_text = gr.Textbox(label="📋 Insight")
+            output_img = gr.Image(label="📈 Chart")
+            query_btn.click(fn=query_ui, inputs=[query_box], outputs=[output_text, output_img])
+    return demo
 if __name__ == "__main__":
-    demo.launch(share=True)
+    ui().launch(share=True)
