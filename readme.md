@@ -1,103 +1,141 @@
 
-# 🏭 AI-Powered Production Insights Agent
+# 🏭 AI Production Agent
 
-Welcome to the **Production Insights AI Agent** — your personal AI data analyst for manufacturing operations! This powerful app allows you to explore, forecast, visualize, and analyze production data using natural language queries. From real-time trends to explainable AI, it's built to deliver **data-backed decisions on demand**.
-
----
-
-## 🚀 Features
-
-🔍 **Natural Language Querying**
-- Ask things like:
-  - “What was the average production for A-4 last month?”
-  - “Compare planned vs actual for June”
-  - “Forecast next 30 days of production for Line A-2”
-
-📊 **Planned vs Actual Production Visualization**
-- Instantly renders side-by-side bar charts
-- Helps identify gaps in execution vs expectations
-
-🔮 **Time Series Forecasting**
-- Powered by Facebook Prophet
-- Predicts future production based on historical trends
-- Supports dynamic time windows (e.g. 15 days, 2 months)
-
-🧠 **MLOps and Explainable AI with MLflow + SHAP + XGBoost**
-- Feature importance comparisons across lines
-- Understand what drives your production outcomes
-
-🧼 **Zero Production Detection**
-- Flags time slots with actual = 0
-- Great for downtime analysis and maintenance planning
-
-🧑‍💻 **OpenRouter RAG (Retrieval-Augmented Generation)**
-- Seamlessly answers complex queries using `Mistral-7B Instruct`
-- Context-aware insights through language + data fusion
-
-🧬 **Gradio UI Dashboard**
-- Intuitive and interactive frontend
-- No need to write code—just ask and get insights with visuals!
+An AI-powered production insights assistant that:
+- ✅ Accepts multiple CSV uploads and stores them in PostgreSQL
+- 🧠 Understands natural language queries using OpenRouter (Mistral)
+- 📊 Detects the intent through user's natural language query and performs forecasting, comparisons, or zero-production analysis
+- 📦 Visualizes results with Matplotlib + Prophet
+- 🚀 Fully dynamic: no hardcoded column names or formats
 
 ---
 
-## 🛠 Tech Stack
+## 📦 Features
 
-| Layer            | Tech Used                              |
-|------------------|----------------------------------------|
-| 📦 Backend       | Python, Pandas, SQLAlchemy              |
-| 🔮 ML & Forecast | Prophet, XGBoost, SHAP                  |
-| 🎨 Visualization | Matplotlib, PIL                         |
-| 🤖 AI Assistant  | OpenRouter + Mistral-7B (free tier)     |
-| 🌐 Frontend      | Gradio                                 |
-| 🧠 MLOps         | MLflow (tracking forecasts & metrics)   |
-| 🗃️ Database       | PostgreSQL                             |
-| 📄 Data Input    | CSV Loader via `loader.py`              |
-
----
-
-## ⚙️ How It Works
-
-1. **Load Data**
-   - Drop your `.csv` files into the `csvs/` folder.
-   - Run `python loader.py` to upload into PostgreSQL as `production_data`.
-
-2. **Start the Agent**
-   ```bash
-   python agent.py
-   ```
-   
-3. **Ask Anything**
-
-   * Use the Gradio interface to ask production-related queries in plain English.
-   * Get answers, insights, forecasts, and SHAP visualizations!
+| Feature                     | Description                                                              |
+|----------------------------|--------------------------------------------------------------------------|
+| Upload multiple CSVs       | CSVs are inserted into PostgreSQL with sanitized table names             |
+| Auto schema extraction     | Detects columns dynamically using PostgreSQL schema                      |
+| LLM-powered query parsing  | Uses OpenRouter’s `mistral-7b-instruct` to detect task + table + filters |
+| Forecasting                | Forecasts future values using Facebook Prophet                           |
+| Comparison                 | Compares planned vs actual (auto-detects columns if not specified)       |
+| Zero-production detection  | Counts zero-entries in the selected target column                        |
+| Visual & textual output    | Generates insights + graphs using Gradio                                 |
 
 ---
 
-## 🔐 OpenRouter Setup
+## 🛠️ Installation
 
-This app uses [OpenRouter.ai](https://openrouter.ai) to run the Mistral-7B model for free!
+### 1. Clone this repo
 
-Set your OpenRouter API key in `agent.py`:
+```bash
+git clone https://github.com/your-username/ai-production-agent.git
+cd ai-production-agent
+````
+
+### 2. Set up virtual environment (optional)
+
+```bash
+python -m venv venv
+source venv/bin/activate  # or venv\Scripts\activate on Windows
+```
+
+### 3. Install dependencies
+
+```bash
+pip install gradio pandas numpy matplotlib prophet sqlalchemy openai psycopg2-binary
+```
+
+---
+
+## 🧠 OpenRouter Setup
+
+1. Get your OpenRouter API key from [https://openrouter.ai/](https://openrouter.ai/)
+2. Replace the `api_key` value in this line in `prod.py`:
 
 ```python
 client = OpenAI(
-    api_key="sk-or-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    api_key="sk-or-...",
     base_url="https://openrouter.ai/api/v1"
 )
 ```
 
 ---
 
-## 💬 Example Queries
+## 🐘 PostgreSQL Setup
 
-* "average production for A-2 in April"
-* "forecast next 15 days for A-4"
-* "compare planned vs actual for job 301"
-* "show shap for A-2 and A-3"
-* "zero production in May 2024"
+1. Install PostgreSQL locally and create a DB named `prod_insights`.
+2. Use the default user (`postgres`) and password (`root`) or update the connection string in:
+
+```python
+def get_engine():
+    return create_engine("postgresql://postgres:root@localhost:5432/prod_insights")
+```
 
 ---
 
-## 📜 License
+## 🚀 Running the App
 
-This project is licensed under the MIT License.
+```bash
+python prod.py
+```
+
+You’ll get a **Gradio interface** link like:
+
+```
+Running on local URL:  http://127.0.0.1:7860
+```
+
+---
+
+## 🧪 Example Queries
+
+* `Forecast production for next 60 days from garments table`
+* `Compare planned vs actual in monthly_data table`
+* `Find zero production entries from shift_analysis`
+* `Forecast Line A-12 from table garments for 30 days`
+* `How many zero entries for Actual in March from quality_check`
+
+---
+
+## 📁 File Structure
+
+```
+├── prod.py              # Main application code
+├── README.md            # This file
+```
+
+---
+
+## 🧠 Behind the Scenes
+
+* **LLM Prompting**: Your query is converted into structured JSON like:
+
+```json
+{
+  "task": "forecast",
+  "table": "garments",
+  "date_col": "shift_date",
+  "target_col": "actual",
+  "filters": { "line": "A-12" },
+  "period_days": 30
+}
+```
+
+* **No hardcoded logic**: Dates and filters are dynamically detected using column names + values.
+* **Robust auto-fixes**: Handles invalid LLM outputs with auto-fix attempts on the returned JSON.
+
+---
+
+## ✅ To Do
+
+* [ ] Add SHAP feature importance
+* [ ] Add multi-table analysis
+* [ ] Export to PDF/Excel
+* [ ] Deploy on Hugging Face Spaces / Streamlit Cloud
+
+---
+
+## 📝 License
+
+MIT License. Free to use and modify.
