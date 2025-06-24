@@ -7,6 +7,7 @@ from PIL import Image
 import gradio as gr
 from sqlalchemy import create_engine
 from openai import OpenAI
+import difflib
 client = OpenAI(
     api_key="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",
     base_url="https://openrouter.ai/api/v1"
@@ -26,6 +27,39 @@ Your response MUST be a JSON object with these keys:
 }
 Return only valid JSON.
 """
+def smart_match_column(user_key, df_columns):
+    user_key_norm = user_key.strip().lower()
+    df_columns_norm = [col.strip().lower() for col in df_columns]
+    close_matches = difflib.get_close_matches(user_key_norm, df_columns_norm, n=1, cutoff=0.75)
+    if close_matches:
+        return df_columns[df_columns_norm.index(close_matches[0])]
+    time_keywords = ['time', 'slot', 'range']
+    if any(kw in user_key_norm for kw in time_keywords):
+        for col in df_columns:
+            if any(kw in col.lower() for kw in time_keywords):
+                return col
+    return user_key  # fallback
+def try_filtered_df(filters, df):
+    temp = df.copy()
+    for user_key, val in filters.items():
+        matched_col = smart_match_column(user_key, temp.columns)
+        if matched_col in temp.columns:
+            temp[matched_col] = temp[matched_col].astype(str).str.strip().str.lower()
+            val_norm = str(val).strip().lower()
+            time_pattern = r'\b\d{1,2}(am|pm)?\s*[-to]+\s*\d{1,2}(am|pm)\b'
+            is_time_value = bool(re.search(time_pattern, val_norm))
+            col_values = temp[matched_col].unique()
+            col_values_norm = [v.strip().lower() for v in col_values]
+            matched_val = next((v for v in col_values if v.strip().lower() == val_norm), None)
+            if not matched_val:
+                fuzzy = difflib.get_close_matches(val_norm, col_values_norm, n=1, cutoff=0.7)
+                if fuzzy:
+                    matched_val = col_values[col_values_norm.index(fuzzy[0])]
+            if matched_val:
+                temp = temp[temp[matched_col] == matched_val]
+            else:
+                print(f"❌ No match found for filter {user_key} = {val}, skipping this filter.")
+    return temp
 def get_engine():
     return create_engine("postgresql://postgres:root@localhost:5432/prod_insights")
 engine = get_engine()
@@ -53,15 +87,8 @@ def ask_agent_schema_and_task(query, schema):
     try:
         return json.loads(content)
     except json.JSONDecodeError:
-        pass
-    try:
         content_fixed = re.sub(r"```json|```", "", content)
-        content_fixed = re.sub(r'("\s*[\]}])', r'\1', content_fixed)
-        content_fixed = re.sub(r'(\")\s*(\"[^\"]+\"\s*:)', r'\1,\2', content_fixed)
-        content_fixed = re.sub(r'([}\]"\'])\s*(")', r'\1,\n\2', content_fixed)
         return json.loads(content_fixed)
-    except Exception as e:
-        raise ValueError(f"❌ LLM returned invalid JSON and auto-fix failed: {e}\nRaw Output:\n{content}")
 def auto_detect_date_column(df):
     for col in df.columns:
         sample = df[col].astype(str).head(100)
@@ -96,24 +123,16 @@ def dynamic_analysis(query):
         df = df.dropna(subset=[plan['date_col']])
         if plan['task'] == 'forecast':
             df = df.dropna(subset=[plan['target_col']])
-            original_filters = plan.get('filters', {}).copy()
-            used_filters = original_filters.copy()
-            def try_filtered_df(filters):
-                temp = df.copy()
-                for col, val in filters.items():
-                    if col in temp.columns:
-                        temp = temp[temp[col].astype(str) == str(val)]
-                return temp
-            filtered_df = try_filtered_df(used_filters)
+            used_filters = plan.get('filters', {}).copy()
+            filtered_df = try_filtered_df(used_filters, df)
             while filtered_df.shape[0] < 2 and used_filters:
                 removed = used_filters.popitem()
                 print(f"⚠️ Not enough data. Removed filter: {removed[0]} = {removed[1]}")
-                filtered_df = try_filtered_df(used_filters)
-            if filtered_df.shape[0] < 2:
-                filtered_df = df.copy()
+                filtered_df = try_filtered_df(used_filters, df)
+            print(f"🔎 Filtered rows: {filtered_df.shape[0]} for filters: {used_filters}")
             if filtered_df.shape[0] < 2:
                 return "❌ Not enough data to forecast, even after relaxing filters.", None
-            filtered_df = filtered_df.groupby(plan['date_col'])[plan['target_col']].sum().reset_index()
+            filtered_df = filtered_df.groupby(filtered_df[plan['date_col']].dt.date)[plan['target_col']].sum().reset_index()
             filtered_df.columns = ['ds', 'y']
             model = Prophet()
             model.fit(filtered_df)
