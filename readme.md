@@ -1,26 +1,50 @@
-
 # 🏭 AI Production Agent
 
-An AI-powered production insights assistant that:
-- ✅ Accepts multiple CSV uploads and stores them in PostgreSQL
-- 🧠 Understands natural language queries using OpenRouter (Mistral)
-- 📊 Detects the intent through user's natural language query and performs forecasting, comparisons, or zero-production analysis
-- 📦 Visualizes results with Matplotlib + Prophet
-- 🚀 Fully dynamic: no hardcoded column names or formats
+An LLM-orchestrated autonomous production data agent that:
+
+* ✅ Accepts multiple CSV uploads and ingests them into PostgreSQL
+* 🧠 Understands free-form natural language queries with no task labels, keywords, or JSON parsing
+* 🔎 Automatically detects task type (forecast, compare, zero production, summary) through LLM reasoning
+* 📊 Visualizes outputs via bar plots, line graphs, and textual summaries with complete autonomy
+* 🚫 Has **zero hardcoded logic**, column names, task labels, or tool references
+* ♻️ Includes auto-error healing, retry mechanisms, dynamic schema adaptation, and multistep execution support
 
 ---
 
 ## 📦 Features
 
-| Feature                     | Description                                                              |
-|----------------------------|--------------------------------------------------------------------------|
-| Upload multiple CSVs       | CSVs are inserted into PostgreSQL with sanitized table names             |
-| Auto schema extraction     | Detects columns dynamically using PostgreSQL schema                      |
-| LLM-powered query parsing  | Uses OpenRouter’s `mistral-7b-instruct` to detect task + table + filters |
-| Forecasting                | Forecasts future values using Facebook Prophet                           |
-| Comparison                 | Compares planned vs actual (auto-detects columns if not specified)       |
-| Zero-production detection  | Counts zero-entries in the selected target column                        |
-| Visual & textual output    | Generates insights + graphs using Gradio                                 |
+| Feature                          | Description                                                               |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| **Zero-Hardcoded Logic**         | No fixed task keywords, column names, forecast tools, or control flags    |
+| Dynamic multi-table support      | Handles multiple PostgreSQL and CSV tables in a single query              |
+| Intent recognition via LLM       | No JSON returned — intent and column inference done via free-text parsing |
+| Forecasting (via Prophet)        | Predicts future production using LLM-generated Python with Prophet        |
+| Comparison (Bar Plot)            | Automatically generates grouped comparisons via bar charts                |
+| Zero production detection        | Returns rows or jobs where output/actuals are zero                        |
+| Auto-summary generation          | Full statistical + textual insights from any uploaded or existing table   |
+| Multi-step agent logic           | Orchestrated with LangGraph to support retries, multi-code-block routing  |
+| Natural language horizon parsing | Understands phrases like “next month”, “next 60 days”, “30 working days”  |
+| Group-aware filtering            | Dynamically filters by lines, jobs, shifts, dates — no config needed      |
+| Dynamic SQL + Python blocks      | Generated entirely by LLM based on query + live schema                    |
+| SQL-first strict enforcement     | Data must always be queried via SQL; no use of `read_csv` or hardcoded df |
+| Date auto-format repair          | Handles formats like `dd-mm-yyyy`, `mm-dd-yyyy`, and ISO intelligently    |
+| Error recovery via auto-healing  | Retries failed Python blocks up to 6 times with self-repair heuristics    |
+| Dynamic result rendering         | Auto-detects base64 images, text, or dataframes for Streamlit display     |
+| Streamlit UI                     | Simple upload + query interface, optimized for debugging and analysis     |
+| Multi-table comparison           | Compare tables even if they come from different schemas or file sources   |
+
+---
+
+## 🔥 Unique Innovations
+
+| Innovation Area                  | Your Implementation                                                       |
+| -------------------------------- | ------------------------------------------------------------------------- |
+| **Prompt-Only Training**         | Agent is **strictly trained via prompt engineering only**, no finetuning  |
+| **Tool-less routing**            | No need to invoke predefined tools like `forecast()`, `compare()`, etc.   |
+| **No JSON parsing**              | LLM responses are free-form prose and parsed semantically by LangGraph    |
+| **Fully dynamic schema binding** | Works with *any* table and column combo without user config               |
+| **Auto-fix logic**               | Python failures auto-corrected and retried using dynamic simulation       |
+| **Multimodal fallback**          | Handles partial answers (e.g., if Python is `pass`, fallback to SQL only) |
 
 ---
 
@@ -31,7 +55,7 @@ An AI-powered production insights assistant that:
 ```bash
 git clone https://github.com/your-username/ai-production-agent.git
 cd ai-production-agent
-````
+```
 
 ### 2. Set up virtual environment (optional)
 
@@ -43,15 +67,21 @@ source venv/bin/activate  # or venv\Scripts\activate on Windows
 ### 3. Install dependencies
 
 ```bash
-pip install gradio pandas numpy matplotlib prophet sqlalchemy openai psycopg2-binary
+pip install -r requirements.txt
+```
+
+Or manually:
+
+```bash
+pip install streamlit pandas numpy matplotlib prophet sqlalchemy openai psycopg2-binary
 ```
 
 ---
 
 ## 🧠 OpenRouter Setup
 
-1. Get your OpenRouter API key from [https://openrouter.ai/](https://openrouter.ai/)
-2. Replace the `api_key` value in this line in `prod.py`:
+1. Get your API key from [https://openrouter.ai/](https://openrouter.ai/)
+2. Add this to your `.env` or replace directly in `prod.py`:
 
 ```python
 client = OpenAI(
@@ -64,78 +94,68 @@ client = OpenAI(
 
 ## 🐘 PostgreSQL Setup
 
-1. Install PostgreSQL locally and create a DB named `prod_insights`.
-2. Use the default user (`postgres`) and password (`root`) or update the connection string in:
+1. Install PostgreSQL and create a database:
+
+```sql
+CREATE DATABASE prod_insights;
+```
+
+2. Update DB credentials in the code or use `.env`:
 
 ```python
-def get_engine():
-    return create_engine("postgresql://postgres:root@localhost:5432/prod_insights")
+postgresql://postgres:root@localhost:5432/prod_insights
 ```
 
 ---
 
-## 🚀 Running the App
+## 🚀 Run the App
 
 ```bash
-python prod.py
-```
-
-You’ll get a **Gradio interface** link like:
-
-```
-Running on local URL:  http://127.0.0.1:7860
+streamlit run prod.py
 ```
 
 ---
 
-## 🧪 Example Queries
+## 💡 Example Queries
 
-* `Forecast production for next 60 days from garments table`
-* `Compare planned vs actual in monthly_data table`
-* `Find zero production entries from shift_analysis`
-* `Forecast Line A-12 from table garments for 30 days`
-* `How many zero entries for Actual in March from quality_check`
-
----
-
-## 📁 File Structure
-
-```
-├── prod.py              # Main application code
-├── README.md            # This file
-```
+| Task Type       | Example Query                                                   |
+| --------------- | --------------------------------------------------------------- |
+| Forecast        | `Forecast next 60 days for Line A-7 from daily_output table`    |
+| Comparison      | `Compare production in table_a and table_b by date`             |
+| Zero Detection  | `Show when Line A-12 had zero Actual in March`                  |
+| Summary         | `Summarize the table garments_upload.csv`                       |
+| Grouped Compare | `Compare actuals for Line A-14 vs A-10 in a bar chart`          |
+| Multivariate    | `Forecast Actual and Planned for next 30 days from shift_table` |
 
 ---
 
-## 🧠 Behind the Scenes
+## 🧠 How It Works
 
-* **LLM Prompting**: Your query is converted into structured JSON like:
+Your natural language query is:
 
-```json
-{
-  "task": "forecast",
-  "table": "garments",
-  "date_col": "shift_date",
-  "target_col": "actual",
-  "filters": { "line": "A-12" },
-  "period_days": 30
-}
-```
+* Interpreted via LLM (Qwen 2.5 72B on OpenRouter)
+* No predefined JSON plan returned
+* Instead, the LLM replies with full natural language explanations and:
 
-* **No hardcoded logic**: Dates and filters are dynamically detected using column names + values.
-* **Robust auto-fixes**: Handles invalid LLM outputs with auto-fix attempts on the returned JSON.
+  * ✅ Dynamic SQL block (always first)
+  * ✅ Dynamic Python block (must reference `df` created from SQL)
+* LangGraph executes SQL → Python in order
+* If Python fails, it:
+
+  * Triggers auto-repair heuristics (e.g., fix undefined df, remove simulation)
+  * Retries up to 6 times
 
 ---
 
 ## ✅ To Do
 
-* [ ] Add SHAP feature importance
-* [ ] Add multi-table analysis
-* [ ] Export to PDF/Excel
-* [ ] Deploy on Hugging Face Spaces / Streamlit Cloud
+* [ ] Add LLM-driven PDF summary export
+* [ ] Add SHAP-style feature attribution (for forecasting)
+* [ ] Hugging Face / Streamlit Cloud deployment
+* [ ] CSV preview and chart download options
 
 ---
 
 ## 📝 License
 
-MIT License. Free to use and modify.
+MIT License — Use freely and modify.
